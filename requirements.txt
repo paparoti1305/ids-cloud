@@ -12,3 +12,6 @@ seaborn==0.13.2
 pandas==2.2.2
 numpy==2.0.2
 streamlit-autorefresh
+altair
+google-cloud-storage
+gcsfs
