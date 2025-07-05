@@ -2,7 +2,26 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
-from block_ip import block_ip, unblock_ip
+import subprocess
+import logging
+import altair as alt
+from streamlit_autorefresh import st_autorefresh
+
+# ---------------------------
+# Configuration and Setup
+# ---------------------------
+
+CSV_FILE = 'Outputs/captured_flows.csv'
+LOG_FILE = 'Logs/app.log'
+
+st.title('Real-Time IDS Dashboard (Guardnet UI + Custom Logic)')
+
+logging.basicConfig(
+    level=logging.INFO,
+    filename=LOG_FILE,
+    filemode='a',
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 # ------- Feature names -------
 feature_names = [
@@ -37,23 +56,45 @@ binary_model = joblib.load("models/top3_binary_xgboost_init_model.pkl")
 multi_model = joblib.load("models/top3_multi_xgboost_init_model.pkl")
 scaler = joblib.load("models/multi_scaler_initial.pkl")
 
-st.title("Real-Time IDS Dashboard (Guardnet UI + Custom Logic)")
+# ---------------------------
+# Session State Initialization
+# ---------------------------
 
 if 'blocked_ips' not in st.session_state:
     st.session_state['blocked_ips'] = set()
 
-# Đọc dữ liệu realtime
-try:
-    df_full = pd.read_csv("Outputs/captured_flows.csv")
-except Exception:
-    df_full = pd.DataFrame()
+# ---------------------------
+# Helper Functions
+# ---------------------------
 
-if not df_full.empty:
-    # Đảm bảo đủ cột feature
+def block_ip(ip):
+    if ip and not ip.startswith(('10.', '192.168.', '172.')):
+        cmd = ["sudo", "iptables", "-A", "INPUT", "-s", ip, "-j", "DROP"]
+        subprocess.run(cmd)
+        logging.info(f"Blocked IP: {ip}")
+        st.session_state['blocked_ips'].add(ip)
+
+def unblock_ip(ip):
+    if ip and not ip.startswith(('10.', '192.168.', '172.')):
+        cmd = ["sudo", "iptables", "-D", "INPUT", "-s", ip, "-j", "DROP"]
+        subprocess.run(cmd)
+        logging.info(f"Unblocked IP: {ip}")
+        st.session_state['blocked_ips'].discard(ip)
+
+@st.cache_data(ttl=2)
+def read_and_process_data(csv_file):
+    try:
+        df = pd.read_csv(csv_file)
+    except (pd.errors.EmptyDataError, FileNotFoundError):
+        return pd.DataFrame(), pd.Series(dtype=int)
+
+    if df.empty:
+        return df, pd.Series(dtype=int)
+
     for col in feature_names:
-        if col not in df_full.columns:
-            df_full[col] = 0
-    df_features = df_full[feature_names].fillna(0).replace([np.inf, -np.inf], 0)
+        if col not in df.columns:
+            df[col] = 0
+    df_features = df[feature_names].fillna(0).replace([np.inf, -np.inf], 0)
 
     # Dự đoán nhị phân
     X = scaler.transform(df_features)
@@ -68,40 +109,123 @@ if not df_full.empty:
         else:
             y_multi.append(0)
 
-    df_full['Prediction'] = y_binary
-    df_full['AttackType'] = y_multi
+    df['Prediction'] = y_binary
+    df['AttackType'] = y_multi
 
     # Block IP tự động nếu là attack
-    for idx, row in df_full.iterrows():
+    for idx, row in df.iterrows():
         if row['Prediction'] == 1:
             src_ip = row.get('src_ip', None)
             if src_ip and src_ip not in st.session_state['blocked_ips']:
                 block_ip(src_ip)
-                st.session_state['blocked_ips'].add(src_ip)
 
-    # Hiển thị dashboard như guardnet
-    st.subheader("Detected Traffic")
-    display_df = df_full[['src_ip', 'dst_ip', 'Prediction', 'AttackType']]
-    display_df['AttackType'] = display_df['AttackType'].map(attack_names)
-    display_df['Prediction'] = display_df['Prediction'].map({0: "Benign", 1: "Attack"})
-    st.dataframe(display_df)
+    # Đếm attacker IPs
+    attack_df = df[df['Prediction'] == 1]
+    if 'src_ip' in attack_df.columns:
+        public_ips = attack_df[~attack_df['src_ip'].astype(str).str.startswith(('10.', '172.', '192.168.100'))]
+        attacker_ips = public_ips['src_ip'].value_counts()
+    else:
+        attacker_ips = pd.Series(dtype=int)
 
-    # Thống kê attack
-    attack_counts = display_df['AttackType'].value_counts()
-    st.bar_chart(attack_counts)
+    return df, attacker_ips
 
-    # Quản lý block/unblock IP
-    st.subheader("Blocked IPs")
-    for ip in list(st.session_state['blocked_ips']):
-        col1, col2 = st.columns([3, 1])
-        col1.write(ip)
-        if col2.button(f"Unblock {ip}", key=f"unblock_{ip}"):
-            unblock_ip(ip)
-            st.session_state['blocked_ips'].remove(ip)
-            st.success(f"Unblocked {ip}")
+# ---------------------------
+# Streamlit Application Structure
+# ---------------------------
 
-else:
-    st.info("No captured data available. Waiting for flows...")
+def main():
+    st.sidebar.title("Navigation")
+    selected_tab = st.sidebar.radio("Select a tab", ["Dashboard", "Logs"])
 
-st.markdown("---")
-st.caption("UI dựa trên GuardNet, logic theo pipeline nhị phân → đa lớp → block IP tự động.")
+    if selected_tab == "Dashboard":
+        dashboard_tab()
+    elif selected_tab == "Logs":
+        logs_tab()
+
+def dashboard_tab():
+    st.header("Dashboard")
+    st_autorefresh(interval=2000, limit=None, key="datarefresh")
+
+    # Đọc và xử lý dữ liệu
+    df, ips = read_and_process_data(CSV_FILE)
+
+    if not df.empty:
+        detected_attacks = df['Prediction'].value_counts()
+        detected_attacks = detected_attacks.drop(index=0, errors='ignore')
+
+        if not detected_attacks.empty:
+            st.warning("🚨 Attack(s) detected!")
+
+            # Map nhãn
+            attack_counts = df['AttackType'].map(attack_names).value_counts()
+            attack_data = attack_counts.reset_index()
+            attack_data.columns = ['Attack Type', 'Count']
+
+            st.markdown("### Detected Attack Types and Occurrences:")
+            for _, row in attack_data.iterrows():
+                st.write(f"**{row['Attack Type']}:** {row['Count']} occurrence(s)")
+
+            # Bar chart Altair
+            st.markdown("### Attack Types Distribution")
+            chart = alt.Chart(attack_data).mark_bar(color='firebrick').encode(
+                x=alt.X('Attack Type', sort='-y', title='Attack Type'),
+                y=alt.Y('Count', title='Number of Occurrences'),
+                tooltip=['Attack Type', 'Count']
+            ).properties(
+                width=700,
+                height=400,
+                title='Attack Types Distribution'
+            ).configure_title(
+                fontSize=20,
+                anchor='middle'
+            ).configure_axis(
+                labelFontSize=12,
+                titleFontSize=14
+            )
+            st.altair_chart(chart, use_container_width=True)
+
+            # Attacker IPs
+            st.markdown("### Attacker IPs:")
+            if not ips.empty:
+                top_ip = ips.idxmax()
+                top_ip_count = ips.max()
+                col1, col2 = st.columns([3, 1])
+                col1.write(f"**{top_ip}**: {top_ip_count} attack(s)")
+                if top_ip not in st.session_state['blocked_ips']:
+                    if col2.button(f"Block {top_ip}", key=f"block_{top_ip}"):
+                        block_ip(top_ip)
+                        st.success(f"Blocked IP {top_ip}")
+                else:
+                    col2.write("Already blocked")
+        else:
+            st.success("✅ No attack detected.")
+
+        # Raw data expander
+        with st.expander("Show Captured Data"):
+            st.dataframe(df)
+    else:
+        st.info("No captured data available. Waiting for flows...")
+
+def logs_tab():
+    st.header("Logs and Blocked IPs")
+    try:
+        with open(LOG_FILE, 'r') as f:
+            logs = f.read()
+        st.subheader("Log File Contents")
+        st.text_area("Logs", logs, height=300)
+    except FileNotFoundError:
+        st.warning("Log file not found.")
+
+    if st.session_state['blocked_ips']:
+        st.subheader("Blocked IPs")
+        for ip in sorted(st.session_state['blocked_ips']):
+            col1, col2 = st.columns([3, 1])
+            col1.write(ip)
+            if col2.button(f"Unblock {ip}", key=f"unblock_{ip}"):
+                unblock_ip(ip)
+                st.success(f"Unblocked {ip}")
+    else:
+        st.info("No IPs have been blocked.")
+
+if __name__ == "__main__":
+    main()
