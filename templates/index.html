@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DDoS Detection Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      margin: 0;
+      padding: 0;
+      color: #333;
+    }
+    .container {
+      max-width: 1200px;
+      margin: auto;
+      padding: 20px;
+    }
+    h1 {
+      text-align: center;
+      color: white;
+    }
+    .status-bar {
+      display: flex;
+      justify-content: space-around;
+      background: white;
+      padding: 15px;
+      border-radius: 10px;
+      box-shadow: 0 5px 10px rgba(0,0,0,0.1);
+      margin-bottom: 20px;
+    }
+    .status-card {
+      text-align: center;
+    }
+    .flows {
+      background: white;
+      padding: 20px;
+      border-radius: 10px;
+    }
+    .flow {
+      padding: 10px;
+      border-bottom: 1px solid #eee;
+    }
+    .attack {
+      background-color: #ffe6e6;
+    }
+    .benign {
+      background-color: #e6ffe6;
+    }
+    button {
+      padding: 10px 20px;
+      border: none;
+      background: #667eea;
+      color: white;
+      font-weight: bold;
+      border-radius: 5px;
+      cursor: pointer;
+      margin-bottom: 15px;
+    }
+    button:hover {
+      background: #5a67d8;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🛡️ Real-Time DDoS Detection System</h1>
+    <button onclick="toggleMonitoring()" id="monitoringBtn">▶️ Start Monitoring</button>
+    <div class="status-bar">
+      <div class="status-card">
+        <h3>Total Flows</h3>
+        <p id="totalFlows">0</p>
+      </div>
+      <div class="status-card">
+        <h3>Attack Flows</h3>
+        <p id="attackFlows">0</p>
+      </div>
+      <div class="status-card">
+        <h3>Benign Flows</h3>
+        <p id="benignFlows">0</p>
+      </div>
+      <div class="status-card">
+        <h3>Threat Level</h3>
+        <p id="threatLevel">LOW</p>
+      </div>
+    </div>
+    <canvas id="trafficChart"></canvas>
+    <div class="flows" id="flowsList">
+      <p>Loading flows...</p>
+    </div>
+  </div>
+  <script>
+    const API_BASE = "https://your-cloud-run-url"; // 🔁 Replace this
+    let isMonitoring = false;
+    let monitoringInterval;
+    const refreshRate = 5000; // 5s
+    const maxChartPoints = 20;
+
+    const ctx = document.getElementById('trafficChart').getContext('2d');
+    const trafficChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: 'Attack Flows',
+            data: [],
+            borderColor: '#e74c3c',
+            backgroundColor: 'rgba(231,76,60,0.2)',
+            fill: true
+          },
+          {
+            label: 'Benign Flows',
+            data: [],
+            borderColor: '#27ae60',
+            backgroundColor: 'rgba(39,174,96,0.2)',
+            fill: true
+          }
+        ]
+      }
+    });
+
+    async function toggleMonitoring() {
+      const btn = document.getElementById('monitoringBtn');
+      if (isMonitoring) {
+        await fetch(`${API_BASE}/api/monitoring/stop`, { method: 'POST' });
+        clearInterval(monitoringInterval);
+        btn.textContent = '▶️ Start Monitoring';
+        isMonitoring = false;
+      } else {
+        await fetch(`${API_BASE}/api/monitoring/start`, { method: 'POST' });
+        monitoringInterval = setInterval(updateDashboard, refreshRate);
+        btn.textContent = '⏸️ Stop Monitoring';
+        isMonitoring = true;
+        updateDashboard();
+      }
+    }
+
+    async function updateDashboard() {
+      try {
+        const res = await fetch(`${API_BASE}/api/flows?limit=50`);
+        const data = await res.json();
+
+        document.getElementById('totalFlows').textContent = data.statistics.total_flows;
+        document.getElementById('attackFlows').textContent = data.statistics.attack_flows;
+        document.getElementById('benignFlows').textContent = data.statistics.benign_flows;
+        document.getElementById('threatLevel').textContent = data.statistics.threat_level;
+
+        // Update chart
+        const time = new Date().toLocaleTimeString();
+        trafficChart.data.labels.push(time);
+        trafficChart.data.datasets[0].data.push(data.statistics.attack_flows);
+        trafficChart.data.datasets[1].data.push(data.statistics.benign_flows);
+
+        if (trafficChart.data.labels.length > maxChartPoints) {
+          trafficChart.data.labels.shift();
+          trafficChart.data.datasets[0].data.shift();
+          trafficChart.data.datasets[1].data.shift();
+        }
+        trafficChart.update();
+
+        // Update flows list
+        const list = document.getElementById("flowsList");
+        list.innerHTML = "";
+        data.flows.forEach(flow => {
+          const div = document.createElement("div");
+          div.className = `flow ${flow.prediction === 'ATTACK' ? 'attack' : 'benign'}`;
+          div.innerHTML = `
+            ${flow.src_ip} → ${flow.dst_ip} | ${flow.prediction} - ${flow.attack_type} (Conf: ${flow.confidence.toFixed(2)})
+          `;
+          list.appendChild(div);
+        });
+      } catch (e) {
+        console.error("Failed to fetch flows:", e);
+      }
+    }
+  </script>
+</body>
+</html>
