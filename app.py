@@ -20,9 +20,9 @@ with open(os.path.join(MODEL_DIR, 'top3_multi_xgboost_init_model.pkl'), 'rb') as
     multi_model = pickle.load(f)
 with open(os.path.join(MODEL_DIR, 'binary_scaler_final.pkl'), 'rb') as f:
     binary_scaler = pickle.load(f)
-with open(os.path.join(MODEL_DIR, 'scaler_multi (4).pkl'), 'rb') as f:
+with open(os.path.join(MODEL_DIR, 'multi_scaler_initial.pkl'), 'rb') as f:
     multi_scaler = pickle.load(f)
-with open(os.path.join(MODEL_DIR, 'label_mapping_moinhat_xaidi.pkl'), 'rb') as f:
+with open(os.path.join(MODEL_DIR, 'label_mapping_moinhat_xaidi (1).pkl'), 'rb') as f:
     label_mapping = pickle.load(f)
 
 
