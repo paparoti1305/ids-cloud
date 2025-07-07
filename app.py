@@ -119,6 +119,11 @@ def get_status():
 @app.route("/api/health", methods=["GET"])
 def health():
     return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
+from flask import render_template
+
+@app.route("/")
+def index():
+    return render_template("index.html")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, debug=True)
