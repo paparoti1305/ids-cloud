@@ -14,8 +14,9 @@ app = Flask(__name__)
 CORS(app)
 
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
-BUCKET_NAME = "ddos_monitor"  # 🔁 Replace with your actual bucket
+BUCKET_NAME = "ddos_monitor"  # 🔁 Đổi lại đúng tên bucket của bạn
 
+# === Load Models & Scalers ===
 with open(os.path.join(MODEL_DIR, 'top3_binary_xgboost_init_model.pkl'), 'rb') as f:
     binary_model = pickle.load(f)
 with open(os.path.join(MODEL_DIR, 'top3_multi_xgboost_init_model.pkl'), 'rb') as f:
@@ -27,9 +28,30 @@ with open(os.path.join(MODEL_DIR, 'multi_scaler_initial.pkl'), 'rb') as f:
 with open(os.path.join(MODEL_DIR, 'label_mapping_moinhat_xaidi (1).pkl'), 'rb') as f:
     label_mapping = pickle.load(f)
 
+# === 67 đặc trưng của mô hình huấn luyện ===
+FEATURE_COLUMNS = [
+    'flow_duration', 'total_fwd_packet', 'total_bwd_packets', 'total_length_of_fwd_packet',
+    'total_length_of_bwd_packet', 'fwd_packet_length_max', 'fwd_packet_length_min',
+    'fwd_packet_length_mean', 'fwd_packet_length_std', 'bwd_packet_length_max',
+    'bwd_packet_length_min', 'bwd_packet_length_mean', 'bwd_packet_length_std',
+    'flow_bytes/s', 'flow_packets/s', 'flow_iat_mean', 'flow_iat_std', 'flow_iat_max',
+    'flow_iat_min', 'fwd_iat_total', 'fwd_iat_mean', 'fwd_iat_std', 'fwd_iat_max',
+    'fwd_iat_min', 'bwd_iat_total', 'bwd_iat_mean', 'bwd_iat_std', 'bwd_iat_max',
+    'bwd_iat_min', 'fwd_psh_flags', 'bwd_psh_flags', 'fwd_urg_flags', 'bwd_urg_flags',
+    'fwd_header_length', 'bwd_header_length', 'fwd_packets/s', 'bwd_packets/s',
+    'packet_length_min', 'packet_length_max', 'packet_length_mean', 'packet_length_std',
+    'packet_length_variance', 'fin_flag_count', 'syn_flag_count', 'rst_flag_count',
+    'psh_flag_count', 'ack_flag_count', 'urg_flag_count', 'ece_flag_count', 'down/up_ratio',
+    'subflow_fwd_packets', 'subflow_fwd_bytes', 'subflow_bwd_packets', 'subflow_bwd_bytes',
+    'fwd_init_win_bytes', 'bwd_init_win_bytes', 'fwd_act_data_pkts', 'fwd_seg_size_min',
+    'active_mean', 'active_std', 'active_max', 'active_min',
+    'idle_mean', 'idle_std', 'idle_max', 'idle_min'
+]
+
 flows_data = deque(maxlen=1000)
 monitoring_status = {"active": False, "last_update": None}
 
+# === GCS: Lấy file parquet mới nhất ===
 def load_latest_parquet_from_gcs():
     client = storage.Client()
     blobs = list(client.bucket(BUCKET_NAME).list_blobs(prefix="incoming/"))
@@ -52,19 +74,23 @@ def get_flows():
         if 'label' in df.columns:
             df = df.drop(columns=['label'])
 
-        X_binary = binary_scaler.transform(df)
+        # === Nhận diện nhị phân ===
+        df_features = df[FEATURE_COLUMNS]
+        X_binary = binary_scaler.transform(df_features)
         binary_preds = binary_model.predict(X_binary)
         binary_probs = binary_model.predict_proba(X_binary)
 
+        # === Phân loại loại tấn công ===
         attack_indices = np.where(binary_preds == 1)[0]
         attack_types = ["Benign"] * len(df)
         if len(attack_indices) > 0:
-            X_attack = df.iloc[attack_indices]
+            X_attack = df_features.iloc[attack_indices]
             X_attack_scaled = multi_scaler.transform(X_attack)
             multi_preds = multi_model.predict(X_attack_scaled)
             for idx, pred in zip(attack_indices, multi_preds):
                 attack_types[idx] = label_mapping.get(pred, "Unknown")
 
+        # === Chuẩn bị dữ liệu trả về ===
         results = []
         for i in range(len(df)):
             result = {
