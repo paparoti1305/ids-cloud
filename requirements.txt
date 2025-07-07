@@ -1,17 +1,32 @@
-nfstream==6.5.3
-requests==2.32.3
-uvicorn==0.35.0
-fastapi==0.115.14
-joblib==1.5.1
-streamlit==1.46.1
-scikit-learn==1.6.1 # Thêm các thư viện khác nếu cần cho model/preprocessing
-xgboost==2.1.4
-imbalanced-learn==0.13.0
-matplotlib==3.10.0
-seaborn==0.13.2
+# Core backend
+flask==3.1.1
+flask-cors==6.0.1
+jinja2==3.1.6
+gunicorn==23.0.0
+
+# Model, ML/DL processing
 pandas==2.2.2
 numpy==2.0.2
-streamlit-autorefresh
-altair
-google-cloud-storage
+scikit-learn==1.6.1
+xgboost==2.1.4
+joblib==1.5.1
+imbalanced-learn==0.13.0
+
+# Visualization (chỉ cần nếu bạn muốn test local)
+matplotlib==3.10.0
+seaborn==0.13.2
+
+# Realtime detection & data pipeline
+nfstream==6.4.3
+requests==2.32.3
+
+# Optional Cloud integration
+google-cloud-storage==2.16.0
 gcsfs
+
+# FastAPI & Uvicorn (chỉ cần nếu bạn dùng đồng thời với FastAPI)
+fastapi==0.115.14
+uvicorn==0.35.0
+
+# Fix compatibility
+protobuf==5.29.5
