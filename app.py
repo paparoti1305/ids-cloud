@@ -10,17 +10,21 @@ from collections import deque
 app = Flask(__name__)
 CORS(app)
 
-# Load models and scalers
-with open('top3_binary_xgboost_init_model.pkl', 'rb') as f:
+import os
+
+MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
+
+with open(os.path.join(MODEL_DIR, 'top3_binary_xgboost_init_model.pkl'), 'rb') as f:
     binary_model = pickle.load(f)
-with open('top3_multi_xgboost_init_model.pkl', 'rb') as f:
+with open(os.path.join(MODEL_DIR, 'top3_multi_xgboost_init_model.pkl'), 'rb') as f:
     multi_model = pickle.load(f)
-with open('binary_scaler_final.pkl', 'rb') as f:
+with open(os.path.join(MODEL_DIR, 'binary_scaler_final.pkl'), 'rb') as f:
     binary_scaler = pickle.load(f)
-with open('scaler_multi (4).pkl', 'rb') as f:
+with open(os.path.join(MODEL_DIR, 'scaler_multi (4).pkl'), 'rb') as f:
     multi_scaler = pickle.load(f)
-with open('label_mapping_moinhat_xaidi.pkl', 'rb') as f:
+with open(os.path.join(MODEL_DIR, 'label_mapping_moinhat_xaidi.pkl'), 'rb') as f:
     label_mapping = pickle.load(f)
+
 
 flows_data = deque(maxlen=1000)
 monitoring_status = {"active": False, "last_update": None}
