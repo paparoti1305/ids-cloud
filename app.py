@@ -1,18 +1,20 @@
 # ================= app.py =================
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 import pandas as pd
 import numpy as np
 import pickle
 from datetime import datetime
 from collections import deque
+from google.cloud import storage
+import io
+import os
 
 app = Flask(__name__)
 CORS(app)
 
-import os
-
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
+BUCKET_NAME = "ddos_monitor"  # 🔁 Replace with your actual bucket
 
 with open(os.path.join(MODEL_DIR, 'top3_binary_xgboost_init_model.pkl'), 'rb') as f:
     binary_model = pickle.load(f)
@@ -25,20 +27,26 @@ with open(os.path.join(MODEL_DIR, 'multi_scaler_initial.pkl'), 'rb') as f:
 with open(os.path.join(MODEL_DIR, 'label_mapping_moinhat_xaidi (1).pkl'), 'rb') as f:
     label_mapping = pickle.load(f)
 
-
 flows_data = deque(maxlen=1000)
 monitoring_status = {"active": False, "last_update": None}
 
-@app.route("/api/flows", methods=["POST"])
-def receive_flows():
-    try:
-        data = request.get_json()
-        if not data or 'flows' not in data:
-            return jsonify({"error": "Invalid input"}), 400
+def load_latest_parquet_from_gcs():
+    client = storage.Client()
+    blobs = list(client.bucket(BUCKET_NAME).list_blobs(prefix="incoming/"))
+    blobs = sorted(blobs, key=lambda b: b.updated, reverse=True)
+    if not blobs:
+        return pd.DataFrame()
+    latest_blob = blobs[0]
+    content = latest_blob.download_as_bytes()
+    df = pd.read_parquet(io.BytesIO(content))
+    return df
 
-        df = pd.DataFrame(data['flows'])
+@app.route("/api/flows", methods=["GET"])
+def get_flows():
+    try:
+        df = load_latest_parquet_from_gcs()
         if df.empty:
-            return jsonify({"error": "Empty flow data"}), 400
+            return jsonify({"flows": [], "statistics": {}, "monitoring_status": monitoring_status})
 
         original_df = df.copy()
         if 'label' in df.columns:
@@ -76,29 +84,23 @@ def receive_flows():
         flows_data.extend(results)
         monitoring_status["last_update"] = datetime.now().isoformat()
 
-        return jsonify({"status": "success", "processed_flows": len(results), "predictions": results})
+        attack_flows = [f for f in results if f['prediction'] == 'ATTACK']
+        benign_flows = [f for f in results if f['prediction'] == 'BENIGN']
+        threat_level = "HIGH" if len(attack_flows) > 15 else "MEDIUM" if len(attack_flows) > 5 else "LOW"
+
+        return jsonify({
+            "flows": results[-50:],
+            "statistics": {
+                "total_flows": len(results),
+                "attack_flows": len(attack_flows),
+                "benign_flows": len(benign_flows),
+                "threat_level": threat_level
+            },
+            "monitoring_status": monitoring_status
+        })
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-@app.route("/api/flows", methods=["GET"])
-def get_flows():
-    limit = request.args.get("limit", 50, type=int)
-    recent = list(flows_data)[-limit:]
-    attack_flows = [f for f in recent if f['prediction'] == 'ATTACK']
-    benign_flows = [f for f in recent if f['prediction'] == 'BENIGN']
-    threat_level = "HIGH" if len(attack_flows) > 15 else "MEDIUM" if len(attack_flows) > 5 else "LOW"
-
-    return jsonify({
-        "flows": recent,
-        "statistics": {
-            "total_flows": len(recent),
-            "attack_flows": len(attack_flows),
-            "benign_flows": len(benign_flows),
-            "threat_level": threat_level
-        },
-        "monitoring_status": monitoring_status
-    })
 
 @app.route("/api/monitoring/start", methods=["POST"])
 def start_monitoring():
@@ -119,7 +121,6 @@ def get_status():
 @app.route("/api/health", methods=["GET"])
 def health():
     return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
-from flask import render_template
 
 @app.route("/")
 def index():
