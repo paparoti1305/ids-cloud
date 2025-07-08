@@ -1,4 +1,3 @@
-# ================= app.py =================
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 import pandas as pd
@@ -9,14 +8,15 @@ from collections import deque
 from google.cloud import storage
 import io
 import os
+import traceback
 
 app = Flask(__name__)
 CORS(app)
 
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
-BUCKET_NAME = "ddos_monitor"  # 🔁 Đổi lại đúng tên bucket của bạn
+BUCKET_NAME = "ddos_monitor"
 
-# === Load Models & Scalers ===
+# === Load models and scalers ===
 with open(os.path.join(MODEL_DIR, 'top3_binary_xgboost_init_model.pkl'), 'rb') as f:
     binary_model = pickle.load(f)
 with open(os.path.join(MODEL_DIR, 'top3_multi_xgboost_init_model.pkl'), 'rb') as f:
@@ -28,7 +28,6 @@ with open(os.path.join(MODEL_DIR, 'multi_scaler_initial.pkl'), 'rb') as f:
 with open(os.path.join(MODEL_DIR, 'label_mapping_moinhat_xaidi (1).pkl'), 'rb') as f:
     label_mapping = pickle.load(f)
 
-# === 67 đặc trưng của mô hình huấn luyện ===
 FEATURE_COLUMNS = [
     'flow_duration', 'total_fwd_packet', 'total_bwd_packets', 'total_length_of_fwd_packet',
     'total_length_of_bwd_packet', 'fwd_packet_length_max', 'fwd_packet_length_min',
@@ -51,7 +50,6 @@ FEATURE_COLUMNS = [
 flows_data = deque(maxlen=1000)
 monitoring_status = {"active": False, "last_update": None}
 
-# === GCS: Lấy file parquet mới nhất ===
 def load_latest_parquet_from_gcs():
     client = storage.Client()
     blobs = list(client.bucket(BUCKET_NAME).list_blobs(prefix="incoming/"))
@@ -61,6 +59,12 @@ def load_latest_parquet_from_gcs():
     latest_blob = blobs[0]
     content = latest_blob.download_as_bytes()
     df = pd.read_parquet(io.BytesIO(content))
+
+    # ✅ Đảm bảo đủ 67 đặc trưng để dự đoán
+    for col in FEATURE_COLUMNS:
+        if col not in df.columns:
+            df[col] = 0.0
+
     return df
 
 @app.route("/api/flows", methods=["GET"])
@@ -70,17 +74,16 @@ def get_flows():
         if df.empty:
             return jsonify({"flows": [], "statistics": {}, "monitoring_status": monitoring_status})
 
-        original_df = df.copy()
+        original_df = df.copy()  # để hiển thị IP, Port sau khi dự đoán
         if 'label' in df.columns:
             df = df.drop(columns=['label'])
 
-        # === Nhận diện nhị phân ===
+        # ✅ Tách dữ liệu đặc trưng để transform
         df_features = df[FEATURE_COLUMNS]
         X_binary = binary_scaler.transform(df_features)
         binary_preds = binary_model.predict(X_binary)
         binary_probs = binary_model.predict_proba(X_binary)
 
-        # === Phân loại loại tấn công ===
         attack_indices = np.where(binary_preds == 1)[0]
         attack_types = ["Benign"] * len(df)
         if len(attack_indices) > 0:
@@ -90,7 +93,6 @@ def get_flows():
             for idx, pred in zip(attack_indices, multi_preds):
                 attack_types[idx] = label_mapping.get(pred, "Unknown")
 
-        # === Chuẩn bị dữ liệu trả về ===
         results = []
         for i in range(len(df)):
             result = {
@@ -126,6 +128,7 @@ def get_flows():
         })
 
     except Exception as e:
+        print("[ERROR]", traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/monitoring/start", methods=["POST"])
