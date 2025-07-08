@@ -8,11 +8,11 @@ from datetime import datetime
 from google.cloud import storage
 import altair as alt
 
-# Cấu hình layout
+# Cấu hình giao diện rộng
 st.set_page_config(layout="wide")
 st.title("🔥 Realtime DDoS Monitor Dashboard")
 
-# Định nghĩa đường dẫn và cột
+# Khai báo các biến cố định
 MODEL_DIR = 'models'
 BUCKET_NAME = 'ddos_monitor'
 PREFIX = 'incoming/'
@@ -34,7 +34,7 @@ FEATURE_COLUMNS = [
     'active_mean', 'active_std', 'active_max', 'active_min', 'idle_mean', 'idle_std',
     'idle_max', 'idle_min']
 
-# Load model & scaler
+# Tải model và scaler
 @st.cache_resource
 def load_models():
     with open(f'{MODEL_DIR}/top3_binary_xgboost_init_model.pkl', 'rb') as f:
@@ -49,6 +49,7 @@ def load_models():
         label_mapping = pickle.load(f)
     return binary_model, multi_model, binary_scaler, multi_scaler, label_mapping
 
+# Tải file mới nhất từ GCS
 def load_latest_parquet():
     client = storage.Client()
     bucket = client.bucket(BUCKET_NAME)
@@ -58,6 +59,7 @@ def load_latest_parquet():
     latest_blob = sorted(blobs, key=lambda b: b.updated, reverse=True)[0]
     return pd.read_parquet(io.BytesIO(latest_blob.download_as_bytes()))
 
+# Hàm dự đoán và thêm timestamp
 def predict(df, binary_model, multi_model, binary_scaler, multi_scaler, label_mapping):
     df_features = df[FEATURE_COLUMNS].fillna(0)
     X_binary = binary_scaler.transform(df_features)
@@ -90,14 +92,17 @@ def predict(df, binary_model, multi_model, binary_scaler, multi_scaler, label_ma
         })
     return pd.DataFrame(results)
 
-# === MAIN LOGIC ===
+# === MAIN ===
 binary_model, multi_model, binary_scaler, multi_scaler, label_mapping = load_models()
+
+# Vùng placeholder giao diện
 placeholder_chart = st.empty()
-placeholder_table = st.container()
+placeholder_warning = st.empty()
+placeholder_table = st.empty()
 
 data_log = pd.DataFrame()
 refresh_interval = 10  # giây
-ATTACK_ALERT_THRESHOLD = 30  # ngưỡng cảnh báo số dòng ATTACK
+attack_threshold = 30  # ngưỡng cảnh báo
 
 while True:
     df = load_latest_parquet()
@@ -108,31 +113,29 @@ while True:
     df = df.sort_values("flow_duration", ascending=False).head(100)
     result_df = predict(df, binary_model, multi_model, binary_scaler, multi_scaler, label_mapping)
 
+    # Gộp dữ liệu mới nhất vào log
     data_log = pd.concat([result_df, data_log], ignore_index=True).drop_duplicates()
-    data_log = data_log.sort_values(by="Timestamp", ascending=False).head(1000)
+    data_log = data_log.sort_values(by="Timestamp", ascending=False).head(300)
 
-    # === CẢNH BÁO TẤN CÔNG ===
-    attack_count = result_df[result_df["Prediction"] == "ATTACK"].shape[0]
-    with st.container():
-        if attack_count > ATTACK_ALERT_THRESHOLD:
-            st.error(f"🚨 HỆ THỐNG ĐANG BỊ TẤN CÔNG! ({attack_count} dòng có nhãn ATTACK)", icon="⚠️")
-        else:
-            st.success(f"✅ Hệ thống vẫn an toàn ({attack_count} dòng ATTACK dưới ngưỡng {ATTACK_ALERT_THRESHOLD})", icon="🛡️")
+    # Tính toán số lượng BENIGN / ATTACK
+    count_df = data_log["Prediction"].value_counts().reset_index()
+    count_df.columns = ["Prediction", "Count"]
 
-    # Vẽ biểu đồ (nếu có dữ liệu đủ)
-    flow_count = (
-        data_log.groupby(["Timestamp", "Prediction"])
-        .size()
-        .reset_index(name="Count")
-    )
+    # Biểu đồ tròn
+    pie_chart = alt.Chart(count_df).mark_arc(innerRadius=50).encode(
+        theta="Count:Q",
+        color=alt.Color("Prediction:N", scale=alt.Scale(domain=["BENIGN", "ATTACK"], range=["green", "red"])),
+        tooltip=["Prediction:N", "Count:Q"]
+    ).properties(title="Tỷ lệ lưu lượng mạng", height=300)
 
-    if not flow_count.empty and len(flow_count["Timestamp"].unique()) > 1:
-        line_chart = alt.Chart(flow_count).mark_line(point=True).encode(
-            x=alt.X("Timestamp:T", title="Time"),
-            y=alt.Y("Count:Q", title="Number of Flows"),
-            color=alt.Color("Prediction:N", scale=alt.Scale(domain=["BENIGN", "ATTACK"], range=["green", "red"]))
-        ).properties(height=300)
-        placeholder_chart.altair_chart(line_chart, use_container_width=True)
+    placeholder_chart.altair_chart(pie_chart, use_container_width=True)
+
+    # Hiển thị cảnh báo hệ thống
+    attack_count = int(count_df[count_df["Prediction"] == "ATTACK"]["Count"].sum()) if "ATTACK" in count_df["Prediction"].values else 0
+    if attack_count >= attack_threshold:
+        placeholder_warning.error(f"🚨 CẢNH BÁO: Hệ thống đang bị tấn công! ({attack_count} dòng ATTACK ≥ ngưỡng {attack_threshold})")
+    else:
+        placeholder_warning.success(f"✅ Hệ thống vẫn an toàn ({attack_count} dòng ATTACK dưới ngưỡng {attack_threshold})")
 
     # Hiển thị bảng
     with placeholder_table:
