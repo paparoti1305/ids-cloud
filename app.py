@@ -126,7 +126,7 @@ while True:
         theta="Count:Q",
         color=alt.Color("Prediction:N", scale=alt.Scale(domain=["BENIGN", "ATTACK"], range=["green", "red"])),
         tooltip=["Prediction:N", "Count:Q"]
-    ).properties(title="Tỷ lệ lưu lượng mạng", height=300)
+    ).properties(title="Tỷ lệ lưu lượng mạng", height=3000)
 
     placeholder_chart.altair_chart(pie_chart, use_container_width=True)
 
