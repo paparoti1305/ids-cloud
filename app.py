@@ -6,14 +6,12 @@ import io
 import time
 from datetime import datetime
 from google.cloud import storage
+import altair as alt
 
 st.set_page_config(layout="wide")
 MODEL_DIR = 'models'
 BUCKET_NAME = 'ddos_monitor'
 PREFIX = 'incoming/'
-REFRESH_INTERVAL = 10  # giây
-DISPLAY_LIMIT = 40
-
 FEATURE_COLUMNS = [
     'flow_duration', 'total_fwd_packet', 'total_bwd_packets', 'total_length_of_fwd_packet',
     'total_length_of_bwd_packet', 'fwd_packet_length_max', 'fwd_packet_length_min',
@@ -30,8 +28,7 @@ FEATURE_COLUMNS = [
     'subflow_fwd_packets', 'subflow_fwd_bytes', 'subflow_bwd_packets', 'subflow_bwd_bytes',
     'fwd_init_win_bytes', 'bwd_init_win_bytes', 'fwd_act_data_pkts', 'fwd_seg_size_min',
     'active_mean', 'active_std', 'active_max', 'active_min', 'idle_mean', 'idle_std',
-    'idle_max', 'idle_min'
-]
+    'idle_max', 'idle_min']
 
 @st.cache_resource
 def load_models():
@@ -70,6 +67,7 @@ def predict(df):
             attack_types[idx] = label_mapping.get(pred, "Unknown")
 
     results = []
+    timestamp = datetime.now().strftime("%H:%M:%S")
     for i in range(len(df)):
         results.append({
             "Source IP": df.iloc[i].get("src_ip", "N/A"),
@@ -81,23 +79,50 @@ def predict(df):
             "Prediction": "ATTACK" if binary_preds[i] == 1 else "BENIGN",
             "Confidence": float(np.max(binary_probs[i])),
             "Attack Type": attack_types[i],
-            "Timestamp": datetime.now().strftime("%H:%M:%S")
+            "Timestamp": timestamp
         })
     return pd.DataFrame(results)
 
 # === MAIN APP ===
 binary_model, multi_model, binary_scaler, multi_scaler, label_mapping = load_models()
+
 st.title("🔥 Realtime DDoS Monitor Dashboard")
-placeholder = st.empty()
+
+placeholder_chart = st.empty()
+placeholder_table = st.container()
+
+# Lưu dữ liệu dự đoán trước đó
+data_log = pd.DataFrame()
+refresh_interval = 10  # giay
 
 while True:
     df = load_latest_parquet()
-    df = df.sort_values("flow_duration", ascending=False).head(DISPLAY_LIMIT)
+    df = df.sort_values("flow_duration", ascending=False).head(100)
     result_df = predict(df)
+    data_log = pd.concat([result_df, data_log], ignore_index=True).drop_duplicates()
 
-    with placeholder.container():
+    # Biểu đồ số lượng flow theo thời gian
+    flow_count = (
+        data_log.groupby(["Timestamp", "Prediction"])
+        .size()
+        .reset_index(name="Count")
+    )
+    line_chart = alt.Chart(flow_count).mark_line(point=True).encode(
+        x=alt.X("Timestamp:T", title="Time"),
+        y=alt.Y("Count:Q", title="Number of Flows"),
+        color=alt.Color("Prediction:N", scale=alt.Scale(domain=["BENIGN", "ATTACK"], range=["green", "red"]))
+    ).properties(height=300)
+
+    placeholder_chart.altair_chart(line_chart, use_container_width=True)
+
+    # Hiển thị bảng dữ liệu không có số thứ tự
+    with placeholder_table:
         st.markdown(f"### Kết quả dự đoán lúc {datetime.now().strftime('%H:%M:%S')}")
-        st.dataframe(result_df, use_container_width=True, height=700)
+        st.dataframe(
+            data_log.sort_values(by="Timestamp", ascending=False).reset_index(drop=True),
+            use_container_width=True,
+            hide_index=True
+        )
 
-    time.sleep(REFRESH_INTERVAL)
+    time.sleep(refresh_interval)
     st.rerun()
