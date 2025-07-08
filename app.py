@@ -73,7 +73,7 @@ def predict(df, binary_model, multi_model, binary_scaler, multi_scaler, label_ma
         for idx, pred in zip(attack_indices, multi_preds):
             attack_types[idx] = label_mapping.get(pred, "Unknown")
 
-    timestamp = datetime.now()
+    timestamp = datetime.now().strftime("%H:%M:%S")
     results = []
     for i in range(len(df)):
         results.append({
@@ -97,6 +97,7 @@ placeholder_table = st.container()
 
 data_log = pd.DataFrame()
 refresh_interval = 10  # giây
+ATTACK_ALERT_THRESHOLD = 30  # ngưỡng cảnh báo số dòng ATTACK
 
 while True:
     df = load_latest_parquet()
@@ -110,26 +111,28 @@ while True:
     data_log = pd.concat([result_df, data_log], ignore_index=True).drop_duplicates()
     data_log = data_log.sort_values(by="Timestamp", ascending=False).head(1000)
 
-    # Tạo cột Time_10s theo block thời gian 10 giây
-    data_log["Time_10s"] = data_log["Timestamp"].dt.floor("10S")
+    # === CẢNH BÁO TẤN CÔNG ===
+    attack_count = result_df[result_df["Prediction"] == "ATTACK"].shape[0]
+    with st.container():
+        if attack_count > ATTACK_ALERT_THRESHOLD:
+            st.error(f"🚨 HỆ THỐNG ĐANG BỊ TẤN CÔNG! ({attack_count} dòng có nhãn ATTACK)", icon="⚠️")
+        else:
+            st.success(f"✅ Hệ thống vẫn an toàn ({attack_count} dòng ATTACK dưới ngưỡng {ATTACK_ALERT_THRESHOLD})", icon="🛡️")
 
-    # Vẽ biểu đồ
+    # Vẽ biểu đồ (nếu có dữ liệu đủ)
     flow_count = (
-        data_log.groupby(["Time_10s", "Prediction"])
+        data_log.groupby(["Timestamp", "Prediction"])
         .size()
         .reset_index(name="Count")
     )
 
-    if not flow_count.empty and len(flow_count["Time_10s"].unique()) > 1:
+    if not flow_count.empty and len(flow_count["Timestamp"].unique()) > 1:
         line_chart = alt.Chart(flow_count).mark_line(point=True).encode(
-            x=alt.X("Time_10s:T", title="Time"),
+            x=alt.X("Timestamp:T", title="Time"),
             y=alt.Y("Count:Q", title="Number of Flows"),
             color=alt.Color("Prediction:N", scale=alt.Scale(domain=["BENIGN", "ATTACK"], range=["green", "red"]))
         ).properties(height=300)
         placeholder_chart.altair_chart(line_chart, use_container_width=True)
-
-    # Định dạng Timestamp hiển thị dễ đọc
-    data_log["Timestamp"] = data_log["Timestamp"].dt.strftime("%H:%M:%S")
 
     # Hiển thị bảng
     with placeholder_table:
