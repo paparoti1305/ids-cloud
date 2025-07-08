@@ -8,8 +8,11 @@ from datetime import datetime
 from google.cloud import storage
 import altair as alt
 
+# Cấu hình layout
 st.set_page_config(layout="wide")
+st.title("🔥 Realtime DDoS Monitor Dashboard")
 
+# Định nghĩa đường dẫn và cột
 MODEL_DIR = 'models'
 BUCKET_NAME = 'ddos_monitor'
 PREFIX = 'incoming/'
@@ -31,6 +34,7 @@ FEATURE_COLUMNS = [
     'active_mean', 'active_std', 'active_max', 'active_min', 'idle_mean', 'idle_std',
     'idle_max', 'idle_min']
 
+# Load model & scaler
 @st.cache_resource
 def load_models():
     with open(f'{MODEL_DIR}/top3_binary_xgboost_init_model.pkl', 'rb') as f:
@@ -49,10 +53,12 @@ def load_latest_parquet():
     client = storage.Client()
     bucket = client.bucket(BUCKET_NAME)
     blobs = list(bucket.list_blobs(prefix=PREFIX))
+    if not blobs:
+        return pd.DataFrame()
     latest_blob = sorted(blobs, key=lambda b: b.updated, reverse=True)[0]
     return pd.read_parquet(io.BytesIO(latest_blob.download_as_bytes()))
 
-def predict(df):
+def predict(df, binary_model, multi_model, binary_scaler, multi_scaler, label_mapping):
     df_features = df[FEATURE_COLUMNS].fillna(0)
     X_binary = binary_scaler.transform(df_features)
     binary_preds = binary_model.predict(X_binary)
@@ -67,8 +73,8 @@ def predict(df):
         for idx, pred in zip(attack_indices, multi_preds):
             attack_types[idx] = label_mapping.get(pred, "Unknown")
 
-    results = []
     timestamp = datetime.now().strftime("%H:%M:%S")
+    results = []
     for i in range(len(df)):
         results.append({
             "Source IP": df.iloc[i].get("src_ip", "N/A"),
@@ -84,44 +90,46 @@ def predict(df):
         })
     return pd.DataFrame(results)
 
+# === MAIN LOGIC ===
 binary_model, multi_model, binary_scaler, multi_scaler, label_mapping = load_models()
-
-st.title("🔥 Realtime DDoS Monitor Dashboard")
-
 placeholder_chart = st.empty()
 placeholder_table = st.container()
 
-# Lưu dữ liệu dự đoán trước đó
 data_log = pd.DataFrame()
-refresh_interval = 10  # giay
+refresh_interval = 10  # giây
 
 while True:
     df = load_latest_parquet()
-    result_df = predict(df)
-    data_log = pd.concat([result_df, data_log], ignore_index=True)
-    data_log.drop_duplicates(inplace=True)
+    if df.empty:
+        time.sleep(refresh_interval)
+        st.rerun()
 
-    # Biểu đồ số lượng flow theo thời gian
+    df = df.sort_values("flow_duration", ascending=False).head(100)
+    result_df = predict(df, binary_model, multi_model, binary_scaler, multi_scaler, label_mapping)
+
+    data_log = pd.concat([result_df, data_log], ignore_index=True).drop_duplicates()
+    data_log = data_log.sort_values(by="Timestamp", ascending=False).head(1000)
+
+    # Vẽ biểu đồ
     flow_count = (
         data_log.groupby(["Timestamp", "Prediction"])
         .size()
         .reset_index(name="Count")
     )
 
-    if len(flow_count["Timestamp"].unique()) > 1:
+    if not flow_count.empty and len(flow_count["Timestamp"].unique()) > 1:
         line_chart = alt.Chart(flow_count).mark_line(point=True).encode(
             x=alt.X("Timestamp:T", title="Time"),
             y=alt.Y("Count:Q", title="Number of Flows"),
             color=alt.Color("Prediction:N", scale=alt.Scale(domain=["BENIGN", "ATTACK"], range=["green", "red"]))
         ).properties(height=300)
         placeholder_chart.altair_chart(line_chart, use_container_width=True)
-    else:
-        placeholder_chart.empty()
 
+    # Hiển thị bảng
     with placeholder_table:
-        st.markdown(f"### Kết quả dự đoán lúc {datetime.now().strftime('%H:%M:%S')}")
+        st.markdown(f"### Kết quả dự đoán lúc {datetime.now().strftime('%H:%M:%S')} ⏳")
         st.dataframe(
-            data_log.sort_values(by="Timestamp", ascending=False).reset_index(drop=True),
+            data_log.reset_index(drop=True),
             use_container_width=True,
             hide_index=True
         )
