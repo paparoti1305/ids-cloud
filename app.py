@@ -126,7 +126,7 @@ while True:
         theta="Count:Q",
         color=alt.Color("Prediction:N", scale=alt.Scale(domain=["BENIGN", "ATTACK"], range=["green", "red"])),
         tooltip=["Prediction:N", "Count:Q"]
-    ).properties(title="Tỷ lệ lưu lượng mạng", height=3000)
+    ).properties(title="Tỷ lệ lưu lượng mạng", height=300)
 
     placeholder_chart.altair_chart(pie_chart, use_container_width=True)
 
@@ -135,7 +135,7 @@ while True:
     if attack_count >= attack_threshold:
         placeholder_warning.error(f"🚨 CẢNH BÁO: Hệ thống đang bị tấn công! ({attack_count} dòng ATTACK ≥ ngưỡng {attack_threshold})")
     else:
-        placeholder_warning.success(f"✅ Hệ thống vẫn an toàn ({attack_count} dòng ATTACK dưới ngưỡng {attack_threshold})")
+        placeholder_warning.success(f" Hệ thống vẫn an toàn ({attack_count} dòng ATTACK dưới ngưỡng {attack_threshold})")
 
     # Hiển thị bảng
     with placeholder_table:
