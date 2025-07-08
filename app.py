@@ -115,7 +115,7 @@ while True:
 
     # Gộp dữ liệu mới nhất vào log
     data_log = pd.concat([result_df, data_log], ignore_index=True).drop_duplicates()
-    data_log = data_log.sort_values(by="Timestamp", ascending=False).head(300)
+    data_log = data_log.sort_values(by="Timestamp", ascending=False).head(3000)
 
     # Tính toán số lượng BENIGN / ATTACK
     count_df = data_log["Prediction"].value_counts().reset_index()
