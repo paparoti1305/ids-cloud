@@ -7,11 +7,13 @@ import time
 from datetime import datetime
 from google.cloud import storage
 
-# ==== CONFIGURATION ====
 st.set_page_config(layout="wide")
 MODEL_DIR = 'models'
 BUCKET_NAME = 'ddos_monitor'
 PREFIX = 'incoming/'
+REFRESH_INTERVAL = 10  # giây
+DISPLAY_LIMIT = 40
+
 FEATURE_COLUMNS = [
     'flow_duration', 'total_fwd_packet', 'total_bwd_packets', 'total_length_of_fwd_packet',
     'total_length_of_bwd_packet', 'fwd_packet_length_max', 'fwd_packet_length_min',
@@ -70,53 +72,32 @@ def predict(df):
     results = []
     for i in range(len(df)):
         results.append({
-            "timestamp": datetime.now().strftime("%H:%M:%S"),
-            "src_ip": df.iloc[i].get("src_ip", "N/A"),
-            "dst_ip": df.iloc[i].get("dst_ip", "N/A"),
-            "src_port": df.iloc[i].get("src_port", 0),
-            "dst_port": df.iloc[i].get("dst_port", 0),
-            "duration": df.iloc[i].get("flow_duration", 0),
-            "packets": df.iloc[i].get("total_fwd_packet", 0) + df.iloc[i].get("total_bwd_packets", 0),
-            "prediction": "ATTACK" if binary_preds[i] == 1 else "BENIGN",
-            "confidence": float(np.max(binary_probs[i])),
-            "attack_type": attack_types[i],
+            "Source IP": df.iloc[i].get("src_ip", "N/A"),
+            "Dest IP": df.iloc[i].get("dst_ip", "N/A"),
+            "Src Port": df.iloc[i].get("src_port", 0),
+            "Dst Port": df.iloc[i].get("dst_port", 0),
+            "Duration (ms)": df.iloc[i].get("flow_duration", 0),
+            "Packets": df.iloc[i].get("total_fwd_packet", 0) + df.iloc[i].get("total_bwd_packets", 0),
+            "Prediction": "ATTACK" if binary_preds[i] == 1 else "BENIGN",
+            "Confidence": float(np.max(binary_probs[i])),
+            "Attack Type": attack_types[i],
+            "Timestamp": datetime.now().strftime("%H:%M:%S")
         })
     return pd.DataFrame(results)
 
 # === MAIN APP ===
 binary_model, multi_model, binary_scaler, multi_scaler, label_mapping = load_models()
-
-st.title("🔥 Realtime DDoS Log Monitor")
-log_area = st.empty()
-chart_area = st.empty()
-refresh_interval = 10  # seconds
-
-log_data = pd.DataFrame()
+st.title("🔥 Realtime DDoS Monitor Dashboard")
+placeholder = st.empty()
 
 while True:
     df = load_latest_parquet()
-    df = df.sort_values("flow_duration", ascending=False).head(100)
-    new_df = predict(df)
+    df = df.sort_values("flow_duration", ascending=False).head(DISPLAY_LIMIT)
+    result_df = predict(df)
 
-    # Lưu trữ và hiển thị 40 dòng mới nhất (cuộn mới trước)
-    log_data = pd.concat([new_df, log_data]).drop_duplicates().head(40)
+    with placeholder.container():
+        st.markdown(f"### Kết quả dự đoán lúc {datetime.now().strftime('%H:%M:%S')}")
+        st.dataframe(result_df, use_container_width=True, height=700)
 
-    # Giao diện log dạng dòng
-    with log_area.container():
-        st.markdown("#### 🔹 Latest Predictions")
-        for _, row in log_data.iterrows():
-            st.markdown(
-                f"[{row['timestamp']}] {row['src_ip']}:{row['src_port']} ➔ {row['dst_ip']}:{row['dst_port']} | "
-                f"Packets={row['packets']} | {row['prediction']} | Confidence={row['confidence']:.3f} | "
-                f"Type={row['attack_type']}"
-            )
-
-    # Biểu đồ đường lưu lượng theo thời gian
-    volume_data = log_data.groupby("timestamp")["packets"].sum().reset_index()
-    volume_data["timestamp"] = pd.to_datetime(volume_data["timestamp"], format="%H:%M:%S")
-    volume_data = volume_data.sort_values("timestamp")
-    with chart_area.container():
-        st.line_chart(volume_data.rename(columns={"timestamp": "index"}).set_index("index"))
-
-    time.sleep(refresh_interval)
+    time.sleep(REFRESH_INTERVAL)
     st.rerun()
