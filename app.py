@@ -48,15 +48,22 @@ def load_models():
     return binary_model, multi_model, binary_scaler, multi_scaler, label_mapping
 
 
-def load_latest_parquet():
+# ---------- LOAD FILE MỚI ---------- #
+def load_latest_parquet_from_gcs(bucket_name='ddos_monitor', prefix='incoming/'):
     client = storage.Client()
-    bucket = client.bucket(BUCKET_NAME)
-    blobs = list(bucket.list_blobs(prefix=PREFIX))
+    bucket = client.bucket(bucket_name)
+    blobs = list(bucket.list_blobs(prefix=prefix))
+    if not blobs:
+        return None
     latest_blob = sorted(blobs, key=lambda b: b.updated, reverse=True)[0]
     return pd.read_parquet(io.BytesIO(latest_blob.download_as_bytes()))
 
-def predict(df):
-    df_features = df[FEATURE_COLUMNS].fillna(0)
+# ---------- DỰ ĐOÁN ---------- #
+def predict_ddos(df):
+    missing = [col for col in FEATURE_COLUMNS if col not in df.columns]
+    for col in missing:
+        df[col] = 0.0
+    df_features = df[FEATURE_COLUMNS]
     X_binary = binary_scaler.transform(df_features)
     binary_preds = binary_model.predict(X_binary)
     binary_probs = binary_model.predict_proba(X_binary)
@@ -82,26 +89,30 @@ def predict(df):
             "prediction": "ATTACK" if binary_preds[i] == 1 else "BENIGN",
             "confidence": float(np.max(binary_probs[i])),
             "attack_type": attack_types[i],
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         })
-    return pd.DataFrame(results)
+    return results
 
-# === MAIN APP ===
-binary_model, multi_model, binary_scaler, multi_scaler, label_mapping = load_models()
+# ---------- GIAO DIỆN STREAMLIT ---------- #
+st.set_page_config(page_title="🔥 DDoS Log Monitor", layout="wide")
+st.title("🔥 Realtime DDoS Log Monitor")
 
-st.title("🔥 Realtime DDoS Monitor Dashboard")
-
-placeholder = st.empty()
-refresh_interval = 10  # giây
+log_box = st.empty()
+if "last_timestamps" not in st.session_state:
+    st.session_state.last_timestamps = set()
 
 while True:
-    df = load_latest_parquet()
-    df = df.sort_values("flow_duration", ascending=False).head(100)
-    result_df = predict(df)
-
-    with placeholder.container():
-        st.markdown(f"### Kết quả dự đoán lúc {datetime.now().strftime('%H:%M:%S')}")
-        st.dataframe(result_df, use_container_width=True)
-    
-    time.sleep(refresh_interval)
-    st.rerun()
+    df = load_latest_parquet_from_gcs()
+    if df is not None:
+        df = df.sort_values("flow_duration", ascending=False).head(100)
+        results = predict_ddos(df)
+        log_lines = []
+        for entry in results:
+            key = (entry['src_ip'], entry['dst_ip'], entry['src_port'], entry['dst_port'], entry['timestamp'])
+            if key not in st.session_state.last_timestamps:
+                st.session_state.last_timestamps.add(key)
+                line = f"[{entry['timestamp']}] {entry['src_ip']}:{entry['src_port']} ➡️ {entry['dst_ip']}:{entry['dst_port']} | {entry['prediction']} ({entry['attack_type']}) | Confidence: {entry['confidence']:.2f}"
+                log_lines.append(line)
+        if log_lines:
+            log_box.text('\n'.join(log_lines) + "\n" + log_box.text if log_box.text else '\n'.join(log_lines))
+    time.sleep(10)
