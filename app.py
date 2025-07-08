@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -8,10 +7,13 @@ import time
 from datetime import datetime
 from google.cloud import storage
 
-st.set_page_config(layout="wide")
+# ==== Config ====
+st.set_page_config(page_title="DDoS Log Monitor", layout="wide")
+
 MODEL_DIR = 'models'
 BUCKET_NAME = 'ddos_monitor'
 PREFIX = 'incoming/'
+REFRESH_INTERVAL = 10  # giây
 
 FEATURE_COLUMNS = [
     'flow_duration', 'total_fwd_packet', 'total_bwd_packets', 'total_length_of_fwd_packet',
@@ -33,7 +35,6 @@ FEATURE_COLUMNS = [
 ]
 
 @st.cache_resource
-
 def load_models():
     with open(f'{MODEL_DIR}/top3_binary_xgboost_init_model.pkl', 'rb') as f:
         binary_model = pickle.load(f)
@@ -47,23 +48,17 @@ def load_models():
         label_mapping = pickle.load(f)
     return binary_model, multi_model, binary_scaler, multi_scaler, label_mapping
 
-
-# ---------- LOAD FILE MỚI ---------- #
-def load_latest_parquet_from_gcs(bucket_name='ddos_monitor', prefix='incoming/'):
+def load_latest_parquet():
     client = storage.Client()
-    bucket = client.bucket(bucket_name)
-    blobs = list(bucket.list_blobs(prefix=prefix))
+    bucket = client.bucket(BUCKET_NAME)
+    blobs = list(bucket.list_blobs(prefix=PREFIX))
     if not blobs:
         return None
     latest_blob = sorted(blobs, key=lambda b: b.updated, reverse=True)[0]
     return pd.read_parquet(io.BytesIO(latest_blob.download_as_bytes()))
 
-# ---------- DỰ ĐOÁN ---------- #
-def predict_ddos(df):
-    missing = [col for col in FEATURE_COLUMNS if col not in df.columns]
-    for col in missing:
-        df[col] = 0.0
-    df_features = df[FEATURE_COLUMNS]
+def predict_ddos(df, binary_model, multi_model, binary_scaler, multi_scaler, label_mapping):
+    df_features = df[FEATURE_COLUMNS].fillna(0)
     X_binary = binary_scaler.transform(df_features)
     binary_preds = binary_model.predict(X_binary)
     binary_probs = binary_model.predict_proba(X_binary)
@@ -77,42 +72,31 @@ def predict_ddos(df):
         for idx, pred in zip(attack_indices, multi_preds):
             attack_types[idx] = label_mapping.get(pred, "Unknown")
 
-    results = []
+    log_lines = []
     for i in range(len(df)):
-        results.append({
-            "src_ip": df.iloc[i].get("src_ip", "N/A"),
-            "dst_ip": df.iloc[i].get("dst_ip", "N/A"),
-            "src_port": df.iloc[i].get("src_port", 0),
-            "dst_port": df.iloc[i].get("dst_port", 0),
-            "duration": df.iloc[i].get("flow_duration", 0),
-            "packets": df.iloc[i].get("total_fwd_packet", 0) + df.iloc[i].get("total_bwd_packets", 0),
-            "prediction": "ATTACK" if binary_preds[i] == 1 else "BENIGN",
-            "confidence": float(np.max(binary_probs[i])),
-            "attack_type": attack_types[i],
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        })
-    return results
+        line = f"[{datetime.now().strftime('%H:%M:%S')}] "
+        line += f"{df.iloc[i]['src_ip']}:{df.iloc[i]['src_port']} -> {df.iloc[i]['dst_ip']}:{df.iloc[i]['dst_port']} | "
+        line += f"Packets={df.iloc[i]['total_fwd_packet'] + df.iloc[i]['total_bwd_packets']} | "
+        line += f"{'ATTACK' if binary_preds[i] == 1 else 'BENIGN'} | "
+        line += f"Confidence={np.max(binary_probs[i]):.3f} | Type={attack_types[i]}"
+        log_lines.append(line)
+    return "\n".join(log_lines)
 
-# ---------- GIAO DIỆN STREAMLIT ---------- #
-st.set_page_config(page_title="🔥 DDoS Log Monitor", layout="wide")
+# === MAIN ===
+binary_model, multi_model, binary_scaler, multi_scaler, label_mapping = load_models()
+
 st.title("🔥 Realtime DDoS Log Monitor")
 
-log_box = st.empty()
-if "last_timestamps" not in st.session_state:
-    st.session_state.last_timestamps = set()
+log_area = st.empty()
 
 while True:
-    df = load_latest_parquet_from_gcs()
+    df = load_latest_parquet()
     if df is not None:
-        df = df.sort_values("flow_duration", ascending=False).head(100)
-        results = predict_ddos(df)
-        log_lines = []
-        for entry in results:
-            key = (entry['src_ip'], entry['dst_ip'], entry['src_port'], entry['dst_port'], entry['timestamp'])
-            if key not in st.session_state.last_timestamps:
-                st.session_state.last_timestamps.add(key)
-                line = f"[{entry['timestamp']}] {entry['src_ip']}:{entry['src_port']} ➡️ {entry['dst_ip']}:{entry['dst_port']} | {entry['prediction']} ({entry['attack_type']}) | Confidence: {entry['confidence']:.2f}"
-                log_lines.append(line)
-        if log_lines:
-            log_box.text('\n'.join(log_lines) + "\n" + log_box.text if log_box.text else '\n'.join(log_lines))
-    time.sleep(10)
+        df = df.sort_values("flow_duration", ascending=False).head(20)
+        logs = predict_ddos(df, binary_model, multi_model, binary_scaler, multi_scaler, label_mapping)
+        log_area.code(logs, language="text")
+    else:
+        log_area.warning("❗ Không tìm thấy dữ liệu parquet.")
+
+    time.sleep(REFRESH_INTERVAL)
+    st.rerun()
