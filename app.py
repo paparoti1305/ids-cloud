@@ -9,6 +9,7 @@ from google.cloud import storage
 import altair as alt
 
 st.set_page_config(layout="wide")
+
 MODEL_DIR = 'models'
 BUCKET_NAME = 'ddos_monitor'
 PREFIX = 'incoming/'
@@ -83,7 +84,6 @@ def predict(df):
         })
     return pd.DataFrame(results)
 
-# === MAIN APP ===
 binary_model, multi_model, binary_scaler, multi_scaler, label_mapping = load_models()
 
 st.title("🔥 Realtime DDoS Monitor Dashboard")
@@ -97,9 +97,9 @@ refresh_interval = 10  # giay
 
 while True:
     df = load_latest_parquet()
-    df = df.sort_values("flow_duration", ascending=False).head(100)
     result_df = predict(df)
-    data_log = pd.concat([result_df, data_log], ignore_index=True).drop_duplicates()
+    data_log = pd.concat([result_df, data_log], ignore_index=True)
+    data_log.drop_duplicates(inplace=True)
 
     # Biểu đồ số lượng flow theo thời gian
     flow_count = (
@@ -107,15 +107,17 @@ while True:
         .size()
         .reset_index(name="Count")
     )
-    line_chart = alt.Chart(flow_count).mark_line(point=True).encode(
-        x=alt.X("Timestamp:T", title="Time"),
-        y=alt.Y("Count:Q", title="Number of Flows"),
-        color=alt.Color("Prediction:N", scale=alt.Scale(domain=["BENIGN", "ATTACK"], range=["green", "red"]))
-    ).properties(height=300)
 
-    placeholder_chart.altair_chart(line_chart, use_container_width=True)
+    if len(flow_count["Timestamp"].unique()) > 1:
+        line_chart = alt.Chart(flow_count).mark_line(point=True).encode(
+            x=alt.X("Timestamp:T", title="Time"),
+            y=alt.Y("Count:Q", title="Number of Flows"),
+            color=alt.Color("Prediction:N", scale=alt.Scale(domain=["BENIGN", "ATTACK"], range=["green", "red"]))
+        ).properties(height=300)
+        placeholder_chart.altair_chart(line_chart, use_container_width=True)
+    else:
+        placeholder_chart.empty()
 
-    # Hiển thị bảng dữ liệu không có số thứ tự
     with placeholder_table:
         st.markdown(f"### Kết quả dự đoán lúc {datetime.now().strftime('%H:%M:%S')}")
         st.dataframe(
