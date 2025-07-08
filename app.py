@@ -7,14 +7,11 @@ import time
 from datetime import datetime
 from google.cloud import storage
 
-# ==== Config ====
-st.set_page_config(page_title="DDoS Log Monitor", layout="wide")
-
+# ==== CONFIGURATION ====
+st.set_page_config(layout="wide")
 MODEL_DIR = 'models'
 BUCKET_NAME = 'ddos_monitor'
 PREFIX = 'incoming/'
-REFRESH_INTERVAL = 10  # giây
-
 FEATURE_COLUMNS = [
     'flow_duration', 'total_fwd_packet', 'total_bwd_packets', 'total_length_of_fwd_packet',
     'total_length_of_bwd_packet', 'fwd_packet_length_max', 'fwd_packet_length_min',
@@ -52,12 +49,10 @@ def load_latest_parquet():
     client = storage.Client()
     bucket = client.bucket(BUCKET_NAME)
     blobs = list(bucket.list_blobs(prefix=PREFIX))
-    if not blobs:
-        return None
     latest_blob = sorted(blobs, key=lambda b: b.updated, reverse=True)[0]
     return pd.read_parquet(io.BytesIO(latest_blob.download_as_bytes()))
 
-def predict_ddos(df, binary_model, multi_model, binary_scaler, multi_scaler, label_mapping):
+def predict(df):
     df_features = df[FEATURE_COLUMNS].fillna(0)
     X_binary = binary_scaler.transform(df_features)
     binary_preds = binary_model.predict(X_binary)
@@ -72,31 +67,56 @@ def predict_ddos(df, binary_model, multi_model, binary_scaler, multi_scaler, lab
         for idx, pred in zip(attack_indices, multi_preds):
             attack_types[idx] = label_mapping.get(pred, "Unknown")
 
-    log_lines = []
+    results = []
     for i in range(len(df)):
-        line = f"[{datetime.now().strftime('%H:%M:%S')}] "
-        line += f"{df.iloc[i]['src_ip']}:{df.iloc[i]['src_port']} -> {df.iloc[i]['dst_ip']}:{df.iloc[i]['dst_port']} | "
-        line += f"Packets={df.iloc[i]['total_fwd_packet'] + df.iloc[i]['total_bwd_packets']} | "
-        line += f"{'ATTACK' if binary_preds[i] == 1 else 'BENIGN'} | "
-        line += f"Confidence={np.max(binary_probs[i]):.3f} | Type={attack_types[i]}"
-        log_lines.append(line)
-    return "\n".join(log_lines)
+        results.append({
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+            "src_ip": df.iloc[i].get("src_ip", "N/A"),
+            "dst_ip": df.iloc[i].get("dst_ip", "N/A"),
+            "src_port": df.iloc[i].get("src_port", 0),
+            "dst_port": df.iloc[i].get("dst_port", 0),
+            "duration": df.iloc[i].get("flow_duration", 0),
+            "packets": df.iloc[i].get("total_fwd_packet", 0) + df.iloc[i].get("total_bwd_packets", 0),
+            "prediction": "ATTACK" if binary_preds[i] == 1 else "BENIGN",
+            "confidence": float(np.max(binary_probs[i])),
+            "attack_type": attack_types[i],
+        })
+    return pd.DataFrame(results)
 
-# === MAIN ===
+# === MAIN APP ===
 binary_model, multi_model, binary_scaler, multi_scaler, label_mapping = load_models()
 
 st.title("🔥 Realtime DDoS Log Monitor")
-
 log_area = st.empty()
+chart_area = st.empty()
+refresh_interval = 10  # seconds
+
+log_data = pd.DataFrame()
 
 while True:
     df = load_latest_parquet()
-    if df is not None:
-        df = df.sort_values("flow_duration", ascending=False).head(20)
-        logs = predict_ddos(df, binary_model, multi_model, binary_scaler, multi_scaler, label_mapping)
-        log_area.code(logs, language="text")
-    else:
-        log_area.warning("❗ Không tìm thấy dữ liệu parquet.")
+    df = df.sort_values("flow_duration", ascending=False).head(100)
+    new_df = predict(df)
 
-    time.sleep(REFRESH_INTERVAL)
+    # Lưu trữ và hiển thị 40 dòng mới nhất (cuộn mới trước)
+    log_data = pd.concat([new_df, log_data]).drop_duplicates().head(40)
+
+    # Giao diện log dạng dòng
+    with log_area.container():
+        st.markdown("#### 🔹 Latest Predictions")
+        for _, row in log_data.iterrows():
+            st.markdown(
+                f"[{row['timestamp']}] {row['src_ip']}:{row['src_port']} ➔ {row['dst_ip']}:{row['dst_port']} | "
+                f"Packets={row['packets']} | {row['prediction']} | Confidence={row['confidence']:.3f} | "
+                f"Type={row['attack_type']}"
+            )
+
+    # Biểu đồ đường lưu lượng theo thời gian
+    volume_data = log_data.groupby("timestamp")["packets"].sum().reset_index()
+    volume_data["timestamp"] = pd.to_datetime(volume_data["timestamp"], format="%H:%M:%S")
+    volume_data = volume_data.sort_values("timestamp")
+    with chart_area.container():
+        st.line_chart(volume_data.rename(columns={"timestamp": "index"}).set_index("index"))
+
+    time.sleep(refresh_interval)
     st.rerun()
