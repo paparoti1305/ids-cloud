@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -111,7 +112,19 @@ while True:
         st.rerun()
 
     df = df.sort_values("flow_duration", ascending=False).head(100)
+
+    start_predict = time.time()
     result_df = predict(df, binary_model, multi_model, binary_scaler, multi_scaler, label_mapping)
+    end_predict = time.time()
+
+    predict_duration = end_predict - start_predict
+    avg_time_per_flow = predict_duration / len(df) if len(df) > 0 else 0
+
+    # Hiển thị thời gian dự đoán và số luồng
+    col1, col2, col3 = st.columns(3)
+    col1.metric("⏱️ Tổng thời gian dự đoán", f"{predict_duration:.2f} giây")
+    col2.metric("📦 Tổng số luồng xử lý", f"{len(df)}")
+    col3.metric("⚡ Thời gian/luồng", f"{avg_time_per_flow * 1000:.2f} ms")
 
     # Gộp dữ liệu mới nhất vào log
     data_log = pd.concat([result_df, data_log], ignore_index=True).drop_duplicates()
