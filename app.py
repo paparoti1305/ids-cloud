@@ -1,4 +1,3 @@
-# app.py (bản đã bổ sung chức năng Block/Unblock IP và hiển thị thống kê thời gian ở vị trí mới)
 
 import streamlit as st
 import pandas as pd
@@ -10,9 +9,11 @@ from datetime import datetime
 from google.cloud import storage
 import altair as alt
 
+# Cấu hình giao diện rộng
 st.set_page_config(layout="wide")
 st.title("🔥 Realtime DDoS Monitor Dashboard")
 
+# Khai báo các biến cố định
 MODEL_DIR = 'models'
 BUCKET_NAME = 'ddos_monitor'
 PREFIX = 'incoming/'
@@ -34,6 +35,7 @@ FEATURE_COLUMNS = [
     'active_mean', 'active_std', 'active_max', 'active_min', 'idle_mean', 'idle_std',
     'idle_max', 'idle_min']
 
+# Tải model và scaler
 @st.cache_resource
 def load_models():
     with open(f'{MODEL_DIR}/top3_binary_xgboost_init_model.pkl', 'rb') as f:
@@ -48,6 +50,7 @@ def load_models():
         label_mapping = pickle.load(f)
     return binary_model, multi_model, binary_scaler, multi_scaler, label_mapping
 
+# Tải file mới nhất từ GCS
 def load_latest_parquet():
     client = storage.Client()
     bucket = client.bucket(BUCKET_NAME)
@@ -57,10 +60,9 @@ def load_latest_parquet():
     latest_blob = sorted(blobs, key=lambda b: b.updated, reverse=True)[0]
     return pd.read_parquet(io.BytesIO(latest_blob.download_as_bytes()))
 
+# Hàm dự đoán và thêm timestamp
 def predict(df, binary_model, multi_model, binary_scaler, multi_scaler, label_mapping):
     df_features = df[FEATURE_COLUMNS].fillna(0)
-    start_time = time.time()
-
     X_binary = binary_scaler.transform(df_features)
     binary_preds = binary_model.predict(X_binary)
     binary_probs = binary_model.predict_proba(X_binary)
@@ -89,29 +91,19 @@ def predict(df, binary_model, multi_model, binary_scaler, multi_scaler, label_ma
             "Attack Type": attack_types[i],
             "Timestamp": timestamp
         })
-    end_time = time.time()
-    total_duration = end_time - start_time
-    return pd.DataFrame(results), total_duration
+    return pd.DataFrame(results)
 
-def render_block_buttons(ip):
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        if st.button(f"Block {ip}", key=f"block_{ip}"):
-            st.toast(f"Blocked {ip}")
-    with col2:
-        if st.button(f"Unblock {ip}", key=f"unblock_{ip}"):
-            st.toast(f"Unblocked {ip}")
-
+# === MAIN ===
 binary_model, multi_model, binary_scaler, multi_scaler, label_mapping = load_models()
 
+# Vùng placeholder giao diện
 placeholder_chart = st.empty()
 placeholder_warning = st.empty()
 placeholder_table = st.empty()
-placeholder_stat = st.empty()
 
 data_log = pd.DataFrame()
-refresh_interval = 10
-attack_threshold = 30
+refresh_interval = 10  # giây
+attack_threshold = 30  # ngưỡng cảnh báo
 
 while True:
     df = load_latest_parquet()
@@ -120,16 +112,29 @@ while True:
         st.rerun()
 
     df = df.sort_values("flow_duration", ascending=False).head(100)
-    result_df, duration_sec = predict(df, binary_model, multi_model, binary_scaler, multi_scaler, label_mapping)
-    total_flows = len(result_df)
-    per_flow = duration_sec / total_flows if total_flows else 0
 
+    start_predict = time.time()
+    result_df = predict(df, binary_model, multi_model, binary_scaler, multi_scaler, label_mapping)
+    end_predict = time.time()
+
+    predict_duration = end_predict - start_predict
+    avg_time_per_flow = predict_duration / len(df) if len(df) > 0 else 0
+
+    # Hiển thị thời gian dự đoán và số luồng
+    col1, col2, col3 = st.columns(3)
+    col1.metric("⏱️ Tổng thời gian dự đoán", f"{predict_duration:.2f} giây")
+    col2.metric("📦 Tổng số luồng xử lý", f"{len(df)}")
+    col3.metric("⚡ Thời gian/luồng", f"{avg_time_per_flow * 1000:.2f} ms")
+
+    # Gộp dữ liệu mới nhất vào log
     data_log = pd.concat([result_df, data_log], ignore_index=True).drop_duplicates()
     data_log = data_log.sort_values(by="Timestamp", ascending=False).head(3000)
 
+    # Tính toán số lượng BENIGN / ATTACK
     count_df = data_log["Prediction"].value_counts().reset_index()
     count_df.columns = ["Prediction", "Count"]
 
+    # Biểu đồ tròn
     pie_chart = alt.Chart(count_df).mark_arc(innerRadius=50).encode(
         theta="Count:Q",
         color=alt.Color("Prediction:N", scale=alt.Scale(domain=["BENIGN", "ATTACK"], range=["green", "red"])),
@@ -138,22 +143,21 @@ while True:
 
     placeholder_chart.altair_chart(pie_chart, use_container_width=True)
 
-    # Hiển thị thống kê dưới biểu đồ
-    placeholder_stat.markdown(f"#### ⏱️ Tổng thời gian dự đoán: {duration_sec:.3f}s | # Số luồng: {total_flows} | ⌚ Thời gian/luồng: {per_flow:.5f}s")
-
+    # Hiển thị cảnh báo hệ thống
     attack_count = int(count_df[count_df["Prediction"] == "ATTACK"]["Count"].sum()) if "ATTACK" in count_df["Prediction"].values else 0
     if attack_count >= attack_threshold:
-        placeholder_warning.error(f"🚨 Cảnh báo: {attack_count} dòng ATTACK ≥ {attack_threshold}!")
+        placeholder_warning.error(f"🚨 CẢNH BÁO: Hệ thống đang bị tấn công! ({attack_count} dòng ATTACK ≥ ngưỡng {attack_threshold})")
     else:
-        placeholder_warning.success(f"✅ Hệ thống an toàn ({attack_count} dòng ATTACK < {attack_threshold})")
+        placeholder_warning.success(f" Hệ thống vẫn an toàn ({attack_count} dòng ATTACK dưới ngưỡng {attack_threshold})")
 
+    # Hiển thị bảng
     with placeholder_table:
-        st.markdown(f"### Kết quả lúc {datetime.now().strftime('%H:%M:%S')} ")
-        for i, row in data_log.iterrows():
-            with st.expander(f"{row['Source IP']} → {row['Dest IP']}, {row['Prediction']} [{row['Attack Type']}]"):
-                st.write(row)
-                render_block_buttons(row['Source IP'])
-                render_block_buttons(row['Dest IP'])
+        st.markdown(f"### Kết quả dự đoán lúc {datetime.now().strftime('%H:%M:%S')} ⏳")
+        st.dataframe(
+            data_log.reset_index(drop=True),
+            use_container_width=True,
+            hide_index=True
+        )
 
     time.sleep(refresh_interval)
     st.rerun()
