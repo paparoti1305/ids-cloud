@@ -1,5 +1,3 @@
-# app_final_updated.py
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -10,13 +8,14 @@ from datetime import datetime
 from google.cloud import storage
 import altair as alt
 
+# Cấu hình giao diện rộng
 st.set_page_config(layout="wide")
 st.title("🔥 Realtime DDoS Monitor Dashboard")
 
+# Khai báo các biến cố định
 MODEL_DIR = 'models'
 BUCKET_NAME = 'ddos_monitor'
 PREFIX = 'incoming/'
-
 FEATURE_COLUMNS = [
     'flow_duration', 'total_fwd_packet', 'total_bwd_packets', 'total_length_of_fwd_packet',
     'total_length_of_bwd_packet', 'fwd_packet_length_max', 'fwd_packet_length_min',
@@ -59,11 +58,11 @@ def load_latest_parquet():
     return pd.read_parquet(io.BytesIO(latest_blob.download_as_bytes()))
 
 def predict(df, binary_model, multi_model, binary_scaler, multi_scaler, label_mapping):
-    start_time = time.time()
     df_features = df[FEATURE_COLUMNS].fillna(0)
     X_binary = binary_scaler.transform(df_features)
     binary_preds = binary_model.predict(X_binary)
     binary_probs = binary_model.predict_proba(X_binary)
+
     attack_types = ["Benign"] * len(df)
     attack_indices = np.where(binary_preds == 1)[0]
     if len(attack_indices) > 0:
@@ -72,6 +71,7 @@ def predict(df, binary_model, multi_model, binary_scaler, multi_scaler, label_ma
         multi_preds = multi_model.predict(X_attack_scaled)
         for idx, pred in zip(attack_indices, multi_preds):
             attack_types[idx] = label_mapping.get(pred, "Unknown")
+
     timestamp = datetime.now().strftime("%H:%M:%S")
     results = []
     for i in range(len(df)):
@@ -87,42 +87,63 @@ def predict(df, binary_model, multi_model, binary_scaler, multi_scaler, label_ma
             "Attack Type": attack_types[i],
             "Timestamp": timestamp
         })
-    total_time = time.time() - start_time
-    return pd.DataFrame(results), total_time
+    return pd.DataFrame(results)
 
-# Load models
 binary_model, multi_model, binary_scaler, multi_scaler, label_mapping = load_models()
 
-# Load and process data
-df = load_latest_parquet()
-if df.empty:
-    st.warning("Không có dữ liệu để hiển thị.")
-    st.stop()
+placeholder_chart = st.empty()
+placeholder_metrics = st.empty()
+placeholder_warning = st.empty()
+placeholder_table = st.empty()
 
-df = df.sort_values("flow_duration", ascending=False).head(100)
-result_df, prediction_time = predict(df, binary_model, multi_model, binary_scaler, multi_scaler, label_mapping)
+data_log = pd.DataFrame()
+refresh_interval = 10
+attack_threshold = 30
 
-# Pie chart
-count_df = result_df["Prediction"].value_counts().reset_index()
-count_df.columns = ["Prediction", "Count"]
-pie_chart = alt.Chart(count_df).mark_arc(innerRadius=50).encode(
-    theta="Count:Q",
-    color=alt.Color("Prediction:N", scale=alt.Scale(domain=["BENIGN", "ATTACK"], range=["green", "red"])),
-    tooltip=["Prediction:N", "Count:Q"]
-).properties(title="Tỷ lệ lưu lượng mạng", height=300)
-st.altair_chart(pie_chart, use_container_width=True)
+while True:
+    df = load_latest_parquet()
+    if df.empty:
+        time.sleep(refresh_interval)
+        st.rerun()
 
-# Metrics
-col1, col2, col3 = st.columns(3)
-col1.metric("⏱️ Tổng thời gian dự đoán", f"{prediction_time:.2f} giây")
-col2.metric("📦 Tổng số luồng xử lý", f"{len(df)}")
-col3.metric("⚡ Thời gian dự đoán/luồng", f"{(prediction_time / len(df)) * 1000:.2f} ms")
+    df = df.sort_values("flow_duration", ascending=False).head(100)
 
-# Expanders
-for i, row in result_df.iterrows():
-    with st.expander(f"{row['Source IP']} ➜ {row['Dest IP']}, {row['Prediction']} [{row['Attack Type']}]"):
-        st.write(row.drop(["Source IP", "Dest IP"]))
+    start_predict = time.time()
+    result_df = predict(df, binary_model, multi_model, binary_scaler, multi_scaler, label_mapping)
+    end_predict = time.time()
 
-# Full table display
-st.markdown("📊 **Bảng kết quả dự đoán toàn bộ dữ liệu**")
-st.dataframe(result_df)
+    prediction_time = end_predict - start_predict
+
+    data_log = pd.concat([result_df, data_log], ignore_index=True).drop_duplicates()
+    data_log = data_log.sort_values(by="Timestamp", ascending=False).head(3000)
+
+    count_df = data_log["Prediction"].value_counts().reset_index()
+    count_df.columns = ["Prediction", "Count"]
+
+    pie_chart = alt.Chart(count_df).mark_arc(innerRadius=50).encode(
+        theta="Count:Q",
+        color=alt.Color("Prediction:N", scale=alt.Scale(domain=["BENIGN", "ATTACK"], range=["green", "red"])),
+        tooltip=["Prediction:N", "Count:Q"]
+    ).properties(title="Tỷ lệ lưu lượng mạng", height=300)
+
+    placeholder_chart.altair_chart(pie_chart, use_container_width=True)
+
+    # Chèn các chỉ số vào giữa biểu đồ và cảnh báo
+    with placeholder_metrics.container():
+        col1, col2, col3 = st.columns(3)
+        col1.metric("⏱️ Tổng thời gian dự đoán", f"{prediction_time:.2f} giây")
+        col2.metric("📦 Tổng số luồng xử lý", f"{len(df)}")
+        col3.metric("⚡ Thời gian/luồng", f"{(prediction_time / len(df)) * 1000:.2f} ms")
+
+    attack_count = int(count_df[count_df["Prediction"] == "ATTACK"]["Count"].sum()) if "ATTACK" in count_df["Prediction"].values else 0
+    if attack_count >= attack_threshold:
+        placeholder_warning.error(f"🚨 CẢNH BÁO: Hệ thống đang bị tấn công! ({attack_count} dòng ATTACK ≥ ngưỡng {attack_threshold})")
+    else:
+        placeholder_warning.success(f"🛡️ Hệ thống vẫn an toàn ({attack_count} dòng ATTACK dưới ngưỡng {attack_threshold})")
+
+    with placeholder_table:
+        st.markdown(f"### Kết quả dự đoán lúc {datetime.now().strftime('%H:%M:%S')} ⏳")
+        st.dataframe(data_log.reset_index(drop=True), use_container_width=True, hide_index=True)
+
+    time.sleep(refresh_interval)
+    st.rerun()
