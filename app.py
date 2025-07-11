@@ -153,6 +153,9 @@ while True:
                 st.write(row.drop(["Source IP", "Dest IP"]))
                 render_block_buttons(row["Source IP"], "Source", i)
                 render_block_buttons(row["Dest IP"], "Dest", i)
+    with st.expander("📊 Bảng kết quả dự đoán toàn bộ dữ liệu"):
+        st.dataframe(data_log, use_container_width=True)
 
+#  End of Streamlit loop
     time.sleep(refresh_interval)
     st.rerun()
