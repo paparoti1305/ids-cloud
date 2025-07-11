@@ -1,3 +1,4 @@
+# app_final_updated.py
 
 import streamlit as st
 import pandas as pd
@@ -15,6 +16,7 @@ st.title("🔥 Realtime DDoS Monitor Dashboard")
 MODEL_DIR = 'models'
 BUCKET_NAME = 'ddos_monitor'
 PREFIX = 'incoming/'
+
 FEATURE_COLUMNS = [
     'flow_duration', 'total_fwd_packet', 'total_bwd_packets', 'total_length_of_fwd_packet',
     'total_length_of_bwd_packet', 'fwd_packet_length_max', 'fwd_packet_length_min',
@@ -88,74 +90,39 @@ def predict(df, binary_model, multi_model, binary_scaler, multi_scaler, label_ma
     total_time = time.time() - start_time
     return pd.DataFrame(results), total_time
 
+# Load models
 binary_model, multi_model, binary_scaler, multi_scaler, label_mapping = load_models()
 
-if "blocked_ips" not in st.session_state:
-    st.session_state.blocked_ips = set()
+# Load and process data
+df = load_latest_parquet()
+if df.empty:
+    st.warning("Không có dữ liệu để hiển thị.")
+    st.stop()
 
-def render_block_buttons(ip, label, idx):
-    col1, col2 = st.columns(2)
-    with col1:
-        if ip not in st.session_state.blocked_ips:
-            if st.button(f"Block {label} {ip}", key=f"block_{label}_{ip}_{idx}"):
-                st.session_state.blocked_ips.add(ip)
-        else:
-            if st.button(f"Unblock {label} {ip}", key=f"unblock_{label}_{ip}_{idx}"):
-                st.session_state.blocked_ips.remove(ip)
+df = df.sort_values("flow_duration", ascending=False).head(100)
+result_df, prediction_time = predict(df, binary_model, multi_model, binary_scaler, multi_scaler, label_mapping)
 
-placeholder_chart = st.empty()
-placeholder_warning = st.empty()
-placeholder_metrics = st.empty()
-placeholder_table = st.empty()
+# Pie chart
+count_df = result_df["Prediction"].value_counts().reset_index()
+count_df.columns = ["Prediction", "Count"]
+pie_chart = alt.Chart(count_df).mark_arc(innerRadius=50).encode(
+    theta="Count:Q",
+    color=alt.Color("Prediction:N", scale=alt.Scale(domain=["BENIGN", "ATTACK"], range=["green", "red"])),
+    tooltip=["Prediction:N", "Count:Q"]
+).properties(title="Tỷ lệ lưu lượng mạng", height=300)
+st.altair_chart(pie_chart, use_container_width=True)
 
-data_log = pd.DataFrame()
-refresh_interval = 10
-attack_threshold = 30
+# Metrics
+col1, col2, col3 = st.columns(3)
+col1.metric("⏱️ Tổng thời gian dự đoán", f"{prediction_time:.2f} giây")
+col2.metric("📦 Tổng số luồng xử lý", f"{len(df)}")
+col3.metric("⚡ Thời gian dự đoán/luồng", f"{(prediction_time / len(df)) * 1000:.2f} ms")
 
-while True:
-    df = load_latest_parquet()
-    if df.empty:
-        time.sleep(refresh_interval)
-        st.rerun()
+# Expanders
+for i, row in result_df.iterrows():
+    with st.expander(f"{row['Source IP']} ➜ {row['Dest IP']}, {row['Prediction']} [{row['Attack Type']}]"):
+        st.write(row.drop(["Source IP", "Dest IP"]))
 
-    df = df.sort_values("flow_duration", ascending=False).head(100)
-    result_df, prediction_time = predict(df, binary_model, multi_model, binary_scaler, multi_scaler, label_mapping)
-
-    data_log = pd.concat([result_df, data_log], ignore_index=True).drop_duplicates()
-    data_log = data_log.sort_values(by="Timestamp", ascending=False).head(3000)
-
-    count_df = data_log["Prediction"].value_counts().reset_index()
-    count_df.columns = ["Prediction", "Count"]
-
-    pie_chart = alt.Chart(count_df).mark_arc(innerRadius=50).encode(
-        theta="Count:Q",
-        color=alt.Color("Prediction:N", scale=alt.Scale(domain=["BENIGN", "ATTACK"], range=["green", "red"])),
-        tooltip=["Prediction:N", "Count:Q"]
-    ).properties(title="Tỷ lệ lưu lượng mạng", height=300)
-
-    placeholder_chart.altair_chart(pie_chart, use_container_width=True)
-
-    attack_count = int(count_df[count_df["Prediction"] == "ATTACK"]["Count"].sum()) if "ATTACK" in count_df["Prediction"].values else 0
-    if attack_count >= attack_threshold:
-        placeholder_warning.error(f"🚨 CẢNH BÁO: Hệ thống đang bị tấn công! ({attack_count} dòng ATTACK ≥ ngưỡng {attack_threshold})")
-    else:
-        placeholder_warning.success(f"✅ Hệ thống vẫn an toàn ({attack_count} dòng ATTACK dưới ngưỡng {attack_threshold})")
-
-    with placeholder_metrics.container():
-        col1, col2, col3 = st.columns(3)
-        col1.metric("⏱️ Tổng thời gian dự đoán", f"{prediction_time:.2f} giây")
-        col2.metric("📦 Tổng số luồng xử lý", f"{len(df)}")
-        col3.metric("⚡ Thời gian/luồng", f"{(prediction_time / len(df)) * 1000:.2f} ms")
-
-    with placeholder_table:
-        for i, row in result_df.iterrows():
-            with st.expander(f"{row['Source IP']} ➜ {row['Dest IP']}, {row['Prediction']} [{row['Attack Type']}]"):
-                st.write(row.drop(["Source IP", "Dest IP"]))
-                render_block_buttons(row["Source IP"], "Source", i)
-                render_block_buttons(row["Dest IP"], "Dest", i)
-    with st.expander("📊 Bảng kết quả dự đoán toàn bộ dữ liệu"):
-        st.dataframe(data_log, use_container_width=True)
-
-#  End of Streamlit loop
-    time.sleep(refresh_interval)
-    st.rerun()
+# Full table display
+st.markdown("📊 **Bảng kết quả dự đoán toàn bộ dữ liệu**")
+st.dataframe(result_df)
